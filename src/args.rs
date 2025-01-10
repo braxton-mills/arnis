@@ -3,6 +3,7 @@ use colored::Colorize;
 use std::path::Path;
 use std::process::exit;
 use std::time::Duration;
+use crate::gee_integration::GEEClient;
 
 /// Command-line arguments parser
 #[derive(Parser, Debug)]
@@ -48,6 +49,31 @@ pub struct Args {
     /// Set floodfill timeout (seconds) (optional)
     #[arg(long, value_parser = parse_duration)]
     pub timeout: Option<Duration>,
+
+    /// Google Earth Engine API key (optional)
+    #[arg(long)]
+    pub gee_api_key: Option<String>,
+
+    #[clap(skip)]
+    pub gee_client: Option<GEEClient>,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            bbox: None,
+            file: None,
+            path: String::new(),
+            downloader: "requests".to_string(),
+            scale: 1.0,
+            ground_level: -62,
+            winter: false,
+            debug: false,
+            timeout: None,
+            gee_api_key: None,
+            gee_client: None,
+        }
+    }
 }
 
 impl Args {
@@ -70,6 +96,12 @@ impl Args {
                 eprintln!("{}", "Error! Invalid bbox input".red().bold());
                 exit(1);
             }
+        }
+    }
+
+    pub fn initialize_gee(&mut self) {
+        if self.gee_api_key.is_some() {
+            self.gee_client = Some(GEEClient::new());
         }
     }
 }

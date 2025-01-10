@@ -7,6 +7,7 @@ mod colors;
 mod data_processing;
 mod element_processing;
 mod floodfill;
+mod gee_integration;
 mod osm_parser;
 mod progress;
 mod retrieve_data;
@@ -27,6 +28,7 @@ use std::{
     io::{Read, Write},
     panic,
     path::{Path, PathBuf},
+    time::Duration,
 };
 use tauri_plugin_log::{Builder as LogBuilder, Target, TargetKind};
 
@@ -76,8 +78,9 @@ fn main() {
         }
 
         // Parse input arguments
-        let args: Args = Args::parse();
+        let mut args: Args = Args::parse();
         args.run();
+        args.initialize_gee();
 
         let bbox: Vec<f64> = args
             .bbox
@@ -331,62 +334,60 @@ fn gui_start_generation(
     winter_mode: bool,
     floodfill_timeout: u64,
 ) -> Result<(), String> {
+    let mut args = Args {
+        bbox: Some(bbox_text.clone()),
+        path: selected_world,
+        scale: world_scale,
+        ground_level,
+        winter: winter_mode,
+        timeout: Some(Duration::from_secs(floodfill_timeout)),
+        file: None,
+        downloader: "requests".to_string(),
+        debug: false,
+        gee_api_key: None,
+        gee_client: None,
+    };
+
+    args.initialize_gee();
+
     tauri::async_runtime::spawn(async move {
         if let Err(e) = tokio::task::spawn_blocking(move || {
-            // Utility function to reorder bounding box coordinates
-            fn reorder_bbox(bbox: &[f64]) -> (f64, f64, f64, f64) {
-                (bbox[1], bbox[0], bbox[3], bbox[2])
-            }
-
-            // Parse bounding box string and validate it
             let bbox: Vec<f64> = bbox_text
-                .split_whitespace()
-                .map(|s| s.parse::<f64>().expect("Invalid bbox coordinate"))
-                .collect();
+                .split(',')
+                .map(|s| s.parse::<f64>())
+                .collect::<Result<Vec<f64>, _>>()
+                .map_err(|_| "Invalid bounding box format".to_string())?;
 
             if bbox.len() != 4 {
                 return Err("Invalid bounding box format".to_string());
             }
 
-            // Create an Args instance with the chosen bounding box and world directory path
-            let args: Args = Args {
-                bbox: Some(bbox_text),
-                file: None,
-                path: selected_world,
-                downloader: "requests".to_string(),
-                scale: world_scale,
-                ground_level,
-                winter: winter_mode,
-                debug: false,
-                timeout: Some(std::time::Duration::from_secs(floodfill_timeout)),
-            };
-
-            // Reorder bounding box coordinates for further processing
-            let reordered_bbox: (f64, f64, f64, f64) = reorder_bbox(&bbox);
+            let bbox_tuple = (bbox[0], bbox[1], bbox[2], bbox[3]);
 
             // Run data fetch and world generation
-            match retrieve_data::fetch_data(reordered_bbox, None, args.debug, "requests") {
+            match retrieve_data::fetch_data(bbox_tuple, None, args.debug, "requests") {
                 Ok(raw_data) => {
                     let (mut parsed_elements, scale_factor_x, scale_factor_z) =
-                        osm_parser::parse_osm_data(&raw_data, reordered_bbox, &args);
+                        osm_parser::parse_osm_data(&raw_data, bbox_tuple, &args);
                     parsed_elements.sort_by_key(|element: &osm_parser::ProcessedElement| {
                         osm_parser::get_priority(element)
                     });
 
-                    let _ = data_processing::generate_world(
+                    // Generate world
+                    data_processing::generate_world(
                         parsed_elements,
                         &args,
                         scale_factor_x,
                         scale_factor_z,
-                    );
-                    Ok(())
+                    )
                 }
-                Err(e) => Err(format!("Failed to start generation: {}", e)),
+                Err(e) => Err(format!("Failed to fetch data: {}", e)),
             }
         })
         .await
+        .unwrap()
         {
-            eprintln!("Error in blocking task: {}", e);
+            error!("Error during world generation: {}", e);
         }
     });
 

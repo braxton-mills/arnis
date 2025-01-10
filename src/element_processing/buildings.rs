@@ -3,6 +3,7 @@ use crate::block_definitions::*;
 use crate::bresenham::bresenham_line;
 use crate::colors::{color_text_to_rgb_tuple, rgb_distance, RGBTuple};
 use crate::floodfill::flood_fill_area;
+use crate::gee_integration::{GEEClient, coords_to_footprint_id};
 use crate::osm_parser::{ProcessedMemberRole, ProcessedRelation, ProcessedWay};
 use crate::world_editor::WorldEditor;
 use rand::Rng;
@@ -79,26 +80,7 @@ pub fn generate_buildings(
     }
 
     // Determine building height from tags
-    if let Some(levels_str) = element.tags.get("building:levels") {
-        if let Ok(levels) = levels_str.parse::<i32>() {
-            if levels >= 1 {
-                building_height = ((levels * 4 + 2) as f64 * scale_factor) as i32;
-                building_height = building_height.max(3);
-            }
-        }
-    }
-
-    if let Some(height_str) = element.tags.get("height") {
-        if let Ok(height) = height_str.trim_end_matches("m").trim().parse::<f64>() {
-            building_height = (height * scale_factor) as i32;
-            building_height = building_height.max(3);
-        }
-    }
-
-    if let Some(levels) = relation_levels {
-        building_height = ((levels * 4 + 2) as f64 * scale_factor) as i32;
-        building_height = building_height.max(3);
-    }
+    building_height = determine_building_height(element, args.gee_client.as_ref(), scale_factor, relation_levels);
 
     if let Some(amenity_type) = element.tags.get("amenity") {
         if amenity_type == "shelter" {
@@ -525,4 +507,49 @@ fn generate_bridge(
     for (x, z) in bridge_area {
         editor.set_block(floor_block, x, bridge_level, z, None, None);
     }
+}
+
+fn determine_building_height(
+    element: &ProcessedWay,
+    gee_client: Option<&GEEClient>,
+    scale_factor: f64,
+    relation_levels: Option<i32>,
+) -> i32 {
+    let mut building_height = ((6.0 * scale_factor) as i32).max(3); // Default height
+
+    // Try GEE data first if available
+    if let Some(client) = gee_client {
+        let coords: Vec<(f64, f64)> = element.nodes.iter()
+            .map(|n| (n.x as f64, n.z as f64))
+            .collect();
+        let footprint_id = coords_to_footprint_id(&coords);
+        
+        if let Some(height) = client.get_building_height(&footprint_id) {
+            return (height * scale_factor) as i32;
+        }
+    }
+
+    // Fall back to OSM tags
+    if let Some(levels_str) = element.tags.get("building:levels") {
+        if let Ok(levels) = levels_str.parse::<i32>() {
+            if levels >= 1 {
+                building_height = ((levels * 4 + 2) as f64 * scale_factor) as i32;
+                building_height = building_height.max(3);
+            }
+        }
+    }
+
+    if let Some(height_str) = element.tags.get("height") {
+        if let Ok(height) = height_str.trim_end_matches("m").trim().parse::<f64>() {
+            building_height = (height * scale_factor) as i32;
+            building_height = building_height.max(3);
+        }
+    }
+
+    if let Some(levels) = relation_levels {
+        building_height = ((levels * 4 + 2) as f64 * scale_factor) as i32;
+        building_height = building_height.max(3);
+    }
+
+    building_height
 }
